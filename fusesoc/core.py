@@ -11,6 +11,7 @@ from fusesoc import utils
 from fusesoc.config import Config
 from fusesoc.fusesocconfigparser import FusesocConfigParser
 from fusesoc.plusargs import Plusargs
+from fusesoc.vlnv import Vlnv
 from fusesoc.system import System
 
 logger = logging.getLogger(__name__)
@@ -66,11 +67,11 @@ class Core:
                     setattr(self, s.TAG, s)
 
             if self.main.name:
-                self.name = self.main.name
+                self.name = Vlnv(self.main.name)
             else:
-                self.name = basename.split('.core')[0]
+                self.name = Vlnv(basename.split('.core')[0])
 
-            self.sanitized_name = self.name
+            self.sanitized_name = self.name.sanitized_name
 
             self.depend     = self.main.depend
             self.simulators = self.main.simulators

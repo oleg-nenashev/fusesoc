@@ -27,6 +27,7 @@ from fusesoc.config import Config
 from fusesoc.coremanager import CoreManager, DependencyError
 from fusesoc.simulator import SimulatorFactory
 from fusesoc.simulator.verilator import Source
+from fusesoc.vlnv import Vlnv
 from fusesoc.system import System
 from fusesoc.core import Core, OptionSectionMissing
 from fusesoc.utils import pr_err, pr_info, pr_warn, Launcher
@@ -50,9 +51,9 @@ def abort_handler(signal, frame):
 signal.signal(signal.SIGINT, abort_handler)
 
 def build(args):
-    system = args.system
-    if system in CoreManager().get_systems():
-        core = CoreManager().get_core(system)
+    system = Vlnv(args.system)
+    if str(system) in CoreManager().get_systems():
+        core = CoreManager().get_core(str(system))
         try:
             backend = BackendFactory(core)
         except DependencyError as e:
@@ -192,7 +193,7 @@ def system_info(args):
         pr_err("Can't find system '" + args.system + "'")
 
 def sim(args):
-    core = CoreManager().get_core(args.system)
+    core = CoreManager().get_core(Vlnv(args.system))
     if core == None:
         pr_err("Can't find core '" + args.system + "'")
         exit(1)
