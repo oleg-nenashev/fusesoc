@@ -44,7 +44,7 @@ class Vlnv(object):
                 if len(sl) > 1 and _is_version(sl[-1]):
                     self.version = sl.pop()
                 else:
-                    self.version = "0"
+                    self.version = ""
 
                 self.name    = '-'.join(sl)
 
@@ -61,13 +61,15 @@ class Vlnv(object):
             self.name    = vlnv_parts[2]
             self.version = vlnv_parts[3]
         else:
-            raise Exception
+            raise SyntaxError("Illegal core name '{}'".format(s)) 
 
         if self.version or (self.revision > 0):
             if not self.relation:
                 # Version specified without relational operator
                 # Assume user wants the exact version
                 self.relation = "=="
+            if not self.version:
+                self.version = "0"
         else:
             if self.relation:
                 _s = "{}: '{}' operator requires a version "
@@ -95,3 +97,9 @@ class Vlnv(object):
                                         self.name,
                                         self.version,
                                         revision)
+    def depstr(self):
+        if self.relation == '==':
+            relation = ""
+        else:
+            relation = self.relation
+        return relation+str(self)

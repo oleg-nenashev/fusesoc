@@ -7,26 +7,13 @@ logger = logging.getLogger(__name__)
 
 class Xsim(Simulator):
 
-    TOOL_NAME = 'XSIM'
-    def __init__(self, system):
-
-        self.cores = []
-        self.xsim_options = []
-
-        if system.xsim is not None:
-            self.xsim_options = system.xsim.xsim_options
-        super(Xsim, self).__init__(system)
-
-
-
-
     def configure(self, args):
         super(Xsim, self).configure(args)
         self._write_config_files()
 
     def _write_config_files(self):
         xsim_file = 'xsim.prj'
-        f1 = open(os.path.join(self.sim_root,xsim_file),'w')
+        f1 = open(os.path.join(self.work_root,xsim_file),'w')
         self.incdirs = set()
         src_files = []
 
@@ -55,7 +42,7 @@ class Xsim(Simulator):
         f1.close()
 
         tcl_file = 'xsim.tcl'
-        f2 = open(os.path.join(self.sim_root,tcl_file),'w')
+        f2 = open(os.path.join(self.work_root,tcl_file),'w')
         f2.write('add_wave -radix hex /\n')
         f2.write('run all\n')
         f2.close()
@@ -81,10 +68,12 @@ class Xsim(Simulator):
 
         for key, value in self.vlogparam.items():
             args += ['--generic_top', '{}={}'.format(key, value)]
-        args += self.xsim_options
+
+        if self.system.xsim is not None:
+            args += self.system.xsim.xsim_options
 
         Launcher('xelab', args,
-                 cwd      = self.sim_root,
+                 cwd      = self.work_root,
                  errormsg = "Failed to compile Xsim simulation model").run()
 
     def run(self, args):
@@ -103,7 +92,7 @@ class Xsim(Simulator):
         #FIXME Top-level parameters
 
         Launcher('xsim', args,
-                 cwd = self.sim_root,
+                 cwd = self.work_root,
                  errormsg = "Failed to run Xsim simulation").run()
 
         super(Xsim, self).done(args)

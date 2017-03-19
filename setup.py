@@ -10,14 +10,14 @@ setup(
               'fusesoc.build',
               'fusesoc.simulator',
               'fusesoc.provider'],
-    version = "1.5",
+    version = "1.6",
     author = "Olof Kindgren",
     author_email = "olof.kindgren@gmail.com",
     description = ("FuseSoC is a package manager and a set of build tools for HDL (Hardware Description Language) code."),
     license = "GPLv3",
     keywords = ["VHDL", "verilog", "hdl", "rtl", "synthesis", "FPGA", "simulation", "Xilinx", "Altera"],
     url = "https://github.com/olofk/fusesoc",
-    long_description=read('readme.md'),
+    long_description=read('README.rst'),
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Topic :: Utilities",
@@ -30,7 +30,8 @@ setup(
         ]
     },
     install_requires=[
+          'attrs==16.0.0', #Workaround for broken pip dep handler
           'ipyxact>=0.2.3',
-          'simplesat>=0.4.0',
+          'simplesat==0.7.0',
     ],
 )

@@ -13,20 +13,12 @@ class FileAction(argparse.Action):
 
 class Simulator(EdaTool):
 
-    def __init__(self, system):
-        super(Simulator, self).__init__(system)
+    TOOL_TYPE = 'sim'
 
-        self.sim_root = os.path.join(self.build_root, 'sim-'+self.TOOL_NAME.lower())
-
-        self.env['CORE_ROOT'] = os.path.abspath(self.system.core_root)
-        self.env['SIM_ROOT'] = os.path.abspath(self.sim_root)
-        self.env['SIMULATOR'] = self.TOOL_NAME
+    def __init__(self, system, export):
+        super(Simulator, self).__init__(system, export)
 
         logger.debug( "depend -->  " +str (self.cores))
-        if 'toplevel' in self.system.simulator:
-            self.toplevel = self.system.simulator['toplevel']
-        else:
-            self.toplevel = 'orpsoc_tb'
 
         self._get_vpi_modules()
 
@@ -36,53 +28,38 @@ class Simulator(EdaTool):
 
             if core.vpi:
                 vpi_module = {}
-                core_root = os.path.join(self.src_root, core.sanitized_name)
-                vpi_module['root']          = os.path.relpath(core_root, self.sim_root)
+                if self.export:
+                    core_root = os.path.join(self.src_root, core.sanitized_name)
+                else:
+                    core_root = core.files_root
+                vpi_module['root']          = os.path.relpath(core_root, self.work_root)
                 vpi_module['include_dirs']  = [os.path.join(vpi_module['root'], d) for d in core.vpi.include_dirs]
-                vpi_module['src_files']     = [os.path.abspath(os.path.join(core_root, f.name)) for f in core.vpi.src_files]
+                vpi_module['src_files']     = [os.path.relpath(os.path.join(core_root, f.name), self.work_root) for f in core.vpi.src_files]
                 vpi_module['name']          = core.sanitized_name
                 vpi_module['libs']          = [l for l in core.vpi.libs]
                 self.vpi_modules += [vpi_module]
 
-    def _get_fileset_files(self, usage):
-        incdirs = set()
-        src_files = []
-        for core in self.cores:
-            basepath = os.path.relpath(os.path.join(self.src_root, core.sanitized_name), self.sim_root)
-            for fs in core.file_sets:
-                if (set(fs.usage) & set(usage)) and ((str(core.name) == str(self.system.name)) or not fs.private):
-                    for file in fs.file:
-                        if file.is_include_file:
-                            incdirs.add(os.path.join(basepath, os.path.dirname(file.name)))
-                        else:
-                            file.name = os.path.join(basepath, file.name)
-                            src_files.append(file)
-
-        return (src_files, incdirs)
-
     def configure(self, args, skip_params = False):
         if not skip_params:
-            self.parse_args(args, 'sim', ['plusarg', 'vlogparam'])
-        self.work_root = self.sim_root
+            self.parse_args(args, 'sim', ['plusarg', 'vlogdefine', 'vlogparam'])
         super(Simulator, self).configure(args)
 
     def build(self):
         for core in self.cores:
             if core.scripts:
                 run_scripts(core.scripts.pre_build_scripts,
-                            core.core_root,
-                            self.sim_root,
+                            core.files_root,
+                            self.work_root,
                             self.env)
         return
 
     def run(self, args):
-        if not hasattr(self, 'plusarg'):
-            self.parse_args(args, 'sim', ['plusarg', 'vlogparam'])
+        self.parse_args(args, 'sim', ['plusarg', 'vlogdefine', 'vlogparam'])
         for core in self.cores:
             if core.scripts:
                 run_scripts(core.scripts.pre_run_scripts,
                             core.core_root,
-                            self.sim_root,
+                            self.work_root,
                             self.env)
 
     def done(self, args):
@@ -91,5 +68,5 @@ class Simulator(EdaTool):
             if core.scripts:
                 run_scripts(core.scripts.post_run_scripts,
                             core.core_root,
-                            self.sim_root,
+                            self.work_root,
                             self.env)

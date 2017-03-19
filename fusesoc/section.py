@@ -5,6 +5,26 @@ from fusesoc.utils import pr_warn, pr_info, unique_dirs
 from fusesoc.vlnv import Vlnv
 
 class File(object):
+    FILE_TYPES = [
+        'QIP',
+        'SDC',
+        'tclSource',
+        'user',
+        'verilogSource',
+        'verilogSource-95',
+        'verilogSource-2001',
+        'verilogSource-2005',
+        'systemVerilogSource',
+        'systemVerilogSource-3.0',
+        'systemVerilogSource-3.1',
+        'systemVerilogSource-3.1a',
+        'vhdlSource',
+        'vhdlSource-87',
+        'vhdlSource-93',
+        'vhdlSource-2008',
+        'xci',
+        'xdc',
+        ]
     name      = ""
     file_type = ""
     is_include_file = False
@@ -21,6 +41,9 @@ class File(object):
                     self.is_include_file = True
                 elif '=' in _arg:
                     _tmp = [x.strip() for x in _arg.split('=')]
+                    if _tmp[0] == 'file_type' and _tmp[1] not in self.FILE_TYPES:
+                        _s = "Unknown file type '{}'. Allowed file types are {}"
+                        raise SyntaxError(_s.format(_tmp[1], ', '.join(self.FILE_TYPES)))
                     if _tmp[0] in ['file_type', 'logical_name']:
                         setattr(self, _tmp[0], _tmp[1])
                 else:
@@ -145,6 +168,9 @@ class ScriptsSection(Section):
     TAG = 'scripts'
     def __init__(self, items=None):
         super(ScriptsSection, self).__init__()
+        self._add_member('pre_synth_scripts', StringList, 'Scripts to run before backend synthesis')
+        self._add_member('post_impl_scripts', StringList, 'Scripts to run after backend implementation')
+        self._add_member('pre_run_scripts'  , StringList, 'Scripts to run before running simulations')
         self._add_member('pre_build_scripts', StringList, 'Scripts to run before building')
         self._add_member('pre_run_scripts'  , StringList, 'Scripts to run before running simulations')
         self._add_member('post_run_scripts' , StringList, 'Scripts to run after simulations')
@@ -161,7 +187,7 @@ class ToolSection(Section):
         if self.depend:
             _s = "{}-specific dependencies : {}\n"
             s += _s.format(self.TAG,
-                     ' '.join([str(x) for x in self.depend]))
+                     ' '.join([x.depstr() for x in self.depend]))
         return(s)
 
 class MainSection(Section):
@@ -171,6 +197,7 @@ class MainSection(Section):
         super(MainSection, self).__init__()
 
         self._add_member('name'       , str     , "Component name")
+        self._add_member('backend'    , str     , "Backend for FPGA implementation")
         self._add_member('component'  , PathList, "Core IP-Xact component file")
         self._add_member('description', str, "Core description")
         self._add_member('depend'     , VlnvList, "Common dependencies")
@@ -279,7 +306,19 @@ class ModelsimSection(ToolSection):
 
         self._add_member('vlog_options', StringList, "Additional arguments for vlog")
         self._add_member('vsim_options', StringList, "Additional arguments for vsim")
-        self._add_member('run_default_args', StringList, "Default modelsim options when running the simulation. Defaults to '-quiet -c -do run -all'")
+
+        if items:
+            self.load_dict(items)
+
+class RivieraproSection(ToolSection):
+
+    TAG = 'rivierapro'
+
+    def __init__(self, items=None):
+        super(RivieraproSection, self).__init__()
+
+        self._add_member('vlog_options', StringList, "Additional arguments for vlog")
+        self._add_member('vsim_options', StringList, "Additional arguments for vsim")
 
         if items:
             self.load_dict(items)
@@ -363,8 +402,6 @@ class VerilatorSection(ToolSection):
         super(VerilatorSection, self).__init__()
 
         self.include_dirs = []
-        self.archive = False
-        self._object_files = []
 
         self._add_member('verilator_options', StringList, "Verilator build options")
         self._add_member('src_files'        , FileList  , "Verilator testbench C/cpp/sysC source files")
@@ -372,7 +409,7 @@ class VerilatorSection(ToolSection):
         self._add_member('define_files'     , PathList  , "Verilog include files containing `define directives to be converted to C #define directives in corresponding .h files")
         self._add_member('libs'             , PathList  , "External libraries linked with the generated model")
 
-        self._add_member('tb_toplevel', str, 'Testbench top-level C/C++/SC file')
+        self._add_member('tb_toplevel', FileList, 'Testbench top-level C/C++/SC file')
         self._add_member('source_type', str, 'Testbench source code language (Legal values are systemC, C, CPP. Default is C)')
         self._add_member('top_module' , str, 'verilog top-level module')
         self._add_member('cli_parser' , str, "Select CLI argument parser. Set to 'fusesoc' to handle parameter sections like other simulators. Set to 'passthrough' to send the arguments directly to the verilated model. Default is 'passthrough'")
@@ -380,11 +417,6 @@ class VerilatorSection(ToolSection):
         if items:
             self.load_dict(items)
             self.include_dirs  = unique_dirs(self.include_files)
-            if self.src_files:
-                self._object_files = [os.path.splitext(os.path.basename(s.name))[0]+'.o' for s in self.src_files]
-                self.archive = True
-                self.export_files = self.src_files + self.include_files
-
 
     def __str__(self):
         s = super(VerilatorSection, self).__str__()
@@ -419,7 +451,20 @@ class IcestormSection(ToolSection):
 
         if items:
             self.load_dict(items)
-            self.export_files = self.pcf_file
+
+class VivadoSection(ToolSection):
+
+    TAG = 'vivado'
+
+    def __init__(self, items=None):
+        super(VivadoSection, self).__init__()
+
+        self._add_member('part'       , str, 'FPGA device part')
+        self._add_member('hw_device'  , str, 'FPGA device identifier')
+        self._add_member('top_module' , str, 'RTL top-level module')
+
+        if items:
+            self.load_dict(items)
 
 class IseSection(ToolSection):
 
@@ -438,7 +483,6 @@ class IseSection(ToolSection):
 
         if items:
             self.load_dict(items)
-            self.export_files = self.ucf_files
 
 class QuartusSection(ToolSection):
 
@@ -456,9 +500,15 @@ class QuartusSection(ToolSection):
         self._add_member('device'         , str, 'FPGA device identifier')
         self._add_member('top_module'     , str, 'RTL top-level module')
 
+        self.top_module = 'orpsoc_top'
         if items:
             self.load_dict(items)
-            self.export_files = self.qsys_files + self.sdc_files
+
+    def __str__(self):
+        s = ''
+        for x in ['family', 'device', 'top_module']:
+            s += "{} : {}\n".format(self._members[x]['desc'], getattr(self, x))
+        return s
 
 class ParameterSection(Section):
     TAG = 'parameter'
@@ -474,6 +524,13 @@ class ParameterSection(Section):
 
         if items:
             self.load_dict(items)
+    def __str__(self):
+        return """Data type      : {}
+Default value  : {}
+Description    : {}
+Parameter type : {}
+Scope          : {}
+""".format(self.datatype, self.default, self.description, self.paramtype, self.scope)
 
 def load_section(config, section_name, file_name='<unknown>'):
     tmp = section_name.split(' ')
@@ -527,6 +584,7 @@ if __name__ == "__main__":
                  SimulatorList : 'Space-separated list',
                  SourceType    : 'String',
                  StringList    : 'Space-separated list',
+                 VlnvList      : 'Space-separated list of VLNV identifiers',
                  list : 'List'}
     SECTION_TEMPLATE = """
 {}
