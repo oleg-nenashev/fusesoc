@@ -1,12 +1,113 @@
+import difflib
 import os
 import pytest
 
 from fusesoc.core import Core
 
+from test_common import get_core
 def compare_fileset(fileset, name, files):
     assert name == fileset.name
     for i in range(len(files)):
         assert files[i] == fileset.file[i].name
+
+def compare_file(ref_dir, work_root, name):
+    import difflib
+    import os
+    reference_file = os.path.join(ref_dir, name)
+    generated_file = os.path.join(work_root, name)
+
+    assert os.path.exists(generated_file)
+
+    with open(reference_file) as f1, open(generated_file) as f2:
+        diff = ''.join(difflib.unified_diff(f1.readlines(), f2.readlines()))
+        return diff
+
+def test_core_info():
+    tests_dir = os.path.dirname(__file__)
+
+    core = get_core("sockit")
+    gen_info = [x+'\n' for x in core.info().split('\n') if not 'Core root' in x]
+
+    with open(os.path.join(tests_dir, __name__, "sockit.info")) as f:
+        ref_info = [x for x in f.readlines() if not 'Core root' in x]
+    assert '' == ''.join(difflib.unified_diff(ref_info, gen_info))
+
+def test_core_parsing():
+    from fusesoc.vlnv import Vlnv
+    core = get_core("nomain")
+    assert core.name == Vlnv("::nomain:0")
+
+    from fusesoc.core import Core
+    import sys
+    if sys.version_info[0] > 2:
+        with pytest.raises(SyntaxError) as e:
+            core = Core("tests/cores/misc/duplicateoptions.core")
+        assert "option 'file_type' in section 'fileset dummy' already exists" in str(e.value)
+
+def test_get_scripts():
+    import pprint
+    flag_combos = [{'flow' : 'sim', 'is_toplevel' : False},
+                   {'flow' : 'sim', 'is_toplevel' : True},
+                   {'flow' : 'synth', 'is_toplevel' : False},
+                   {'flow' : 'synth', 'is_toplevel' : True},
+    ]
+    core = get_core("scriptscore")
+
+    for flags in flag_combos:
+        env = {'BUILD_ROOT' : os.path.join(os.path.dirname(__file__), 'build')}
+        result = core.get_scripts(flags)
+        expected = {}
+        if flags['flow'] == 'sim':
+            sections = ['post_run_scripts', 'pre_build_scripts', 'pre_run_scripts']
+        else:
+            if flags['is_toplevel']:
+                env['SYSTEM_ROOT'] = core.files_root
+                sections = ['pre_build_scripts', 'post_build_scripts']
+            else:
+                sections = []
+        for section in sections:
+            expected[section] = [{flags['flow'] + section + str(i) : {'env' : env}} for i in range(2)]
+        assert pprint.pformat(expected) == pprint.pformat(result)
+
+def test_get_tool():
+    core = get_core("atlys")
+    assert None     == core.get_tool({'flow' : 'sim', 'tool' : None})
+    assert 'icarus' == core.get_tool({'flow' : 'sim', 'tool' : 'icarus'})
+    assert 'ise'    == core.get_tool({'flow' : 'synth', 'tool' : None})
+    assert 'vivado' == core.get_tool({'flow' : 'synth', 'tool' : 'vivado'})
+    core = get_core("sockit")
+    assert 'icarus' == core.get_tool({'flow' : 'sim', 'tool' : None})
+    assert 'icarus' == core.get_tool({'flow' : 'sim', 'tool' : 'icarus'})
+    del core.main.backend
+    assert None     == core.get_tool({'flow' : 'synth', 'tool' : None})
+    assert 'vivado' == core.get_tool({'flow' : 'synth', 'tool' : 'vivado'})
+    core.main.backend = 'quartus'
+
+def test_get_tool_options():
+    core = get_core("mor1kx-generic")
+    assert {'iverilog_options' : ['-DSIM']} == core.get_tool_options({'is_toplevel' : True, 'tool' : 'icarus'})
+    assert {} == core.get_tool_options({'is_toplevel' : True, 'tool' : 'modelsim'})
+    assert {} == core.get_tool_options({'is_toplevel' : True, 'tool' : 'isim'})
+    assert {} == core.get_tool_options({'is_toplevel' : False, 'tool' : 'icarus'})
+    core = get_core("elf-loader")
+    assert {'libs' : ['-lelf']} == core.get_tool_options({'is_toplevel' : False, 'tool' : 'verilator'})
+def test_get_toplevel():
+    filename = os.path.join(os.path.dirname(__file__),
+                            __name__,
+                            "atlys.core")
+    core = Core(filename)
+    assert 'orpsoc_tb'  == core.get_toplevel({'tool' : 'icarus', 'flow' : 'sim'})
+    assert 'orpsoc_tb'  == core.get_toplevel({'tool' : 'icarus', 'flow' : 'sim', 'target' : None})
+    assert 'tb'         == core.get_toplevel({'tool' : 'icarus', 'flow' : 'sim', 'target' : 'tb'})
+    assert 'orpsoc_top' == core.get_toplevel({'tool' : 'vivado', 'flow' : 'synth'})
+    filename = os.path.join(os.path.dirname(__file__),
+                            __name__,
+                            "sockit.core")
+    core = Core(filename)
+    assert 'dummy_tb'   == core.get_toplevel({'tool' : 'icarus', 'flow' : 'sim'})
+    assert 'dummy_tb'   == core.get_toplevel({'tool' : 'icarus', 'flow' : 'sim', 'target' : None})
+    assert 'tb'         == core.get_toplevel({'tool' : 'icarus', 'flow' : 'sim', 'target' : 'tb'})
+    assert 'orpsoc_top' == core.get_toplevel({'tool' : 'vivado', 'flow' : 'synth'})
 
 def test_icestorm():
     filename = os.path.join(os.path.dirname(__file__),

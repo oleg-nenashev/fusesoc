@@ -1,13 +1,16 @@
 import os
-from fusesoc.config import Config
-from fusesoc import utils
-from fusesoc.utils import pr_warn, pr_info, unique_dirs
+import logging
+from fusesoc.utils import unique_dirs
 from fusesoc.vlnv import Vlnv
+
+logger = logging.getLogger(__name__)
 
 class File(object):
     FILE_TYPES = [
+        'PCF',
         'QIP',
         'SDC',
+        'UCF',
         'tclSource',
         'user',
         'verilogSource',
@@ -133,6 +136,9 @@ class Section(object):
         self.warnings = []
 
     def _add_member(self, name, _type, desc):
+        if name in self._members:
+            _s = "{}: the section '{}' is already defined"
+            raise ValueError(_s.format(self.__class__.__name__, name))
         self._members[name] = {'type' : _type, 'desc' : desc}
         setattr(self, name, _type())
 
@@ -147,7 +153,7 @@ class Section(object):
                     setattr(self, item, _type(items.get(item)))
                 except ValueError as e:
                     _s = "Invalid value '{}'. Allowed values are '{}'"
-                    pr_warn(_s.format(', '.join(e.args[1]),
+                    logger.warning(_s.format(', '.join(e.args[1]),
                                       ', '.join(e.args[2])))
                     setattr(self, item, _type(e.args[0]))
             else:
@@ -170,7 +176,6 @@ class ScriptsSection(Section):
         super(ScriptsSection, self).__init__()
         self._add_member('pre_synth_scripts', StringList, 'Scripts to run before backend synthesis')
         self._add_member('post_impl_scripts', StringList, 'Scripts to run after backend implementation')
-        self._add_member('pre_run_scripts'  , StringList, 'Scripts to run before running simulations')
         self._add_member('pre_build_scripts', StringList, 'Scripts to run before building')
         self._add_member('pre_run_scripts'  , StringList, 'Scripts to run before running simulations')
         self._add_member('post_run_scripts' , StringList, 'Scripts to run after simulations')
@@ -242,9 +247,9 @@ class VerilogSection(Section):
             if not self.file_type:
                 self.file_type = "verilogSource"
             if self.include_files:
-                self.include_dirs  += utils.unique_dirs(self.include_files)
+                self.include_dirs  += unique_dirs(self.include_files)
             if self.tb_include_files:
-                self.tb_include_dirs  += utils.unique_dirs(self.tb_include_files)
+                self.tb_include_dirs  += unique_dirs(self.tb_include_files)
 
             self.export_files = self.src_files + self.include_files + self.tb_src_files + self.tb_include_files + self.tb_private_src_files
 
@@ -406,7 +411,7 @@ class VerilatorSection(ToolSection):
         self._add_member('verilator_options', StringList, "Verilator build options")
         self._add_member('src_files'        , FileList  , "Verilator testbench C/cpp/sysC source files")
         self._add_member('include_files'    , FileList  , "Verilator testbench C include files")
-        self._add_member('define_files'     , PathList  , "Verilog include files containing `define directives to be converted to C #define directives in corresponding .h files")
+        self._add_member('define_files'     , PathList  , "Verilog include files containing `define directives to be converted to C #define directives in corresponding .h files (deprecated)")
         self._add_member('libs'             , PathList  , "External libraries linked with the generated model")
 
         self._add_member('tb_toplevel', FileList, 'Testbench top-level C/C++/SC file')
@@ -417,6 +422,10 @@ class VerilatorSection(ToolSection):
         if items:
             self.load_dict(items)
             self.include_dirs  = unique_dirs(self.include_files)
+            if self.define_files:
+                logger.warning("verilator define_files are deprecated")
+            if not self.source_type:
+                self.source_type = 'C'
 
     def __str__(self):
         s = super(VerilatorSection, self).__str__()
@@ -543,14 +552,14 @@ def load_section(config, section_name, file_name='<unknown>'):
     if cls is None:
         #Note: The following sections are not in section.py yet
         if not section_name in ['plusargs', 'simulator', 'provider']:
-            pr_warn("Unknown section '{}' in '{}'".format(section_name, file_name))
+            logger.warning("Unknown section '{}' in '{}'".format(section_name, file_name))
         return None
 
     items = config.get_section(section_name)
     section = cls(items)
     if section.warnings:
         for warning in section.warnings:
-            pr_warn('Warning: %s in %s' % (warning, file_name))
+            logger.warning('Warning: %s in %s' % (warning, file_name))
     if _name:
         return (section, _name)
     else:

@@ -2,32 +2,29 @@ import difflib
 import os
 import pytest
 
-from fusesoc.config import Config
-from fusesoc.core import Core
-from fusesoc.coremanager import CoreManager
-from fusesoc.main import _get_core, _import
+from test_common import compare_files, get_core, get_synth, vlogdefines, vlogparams
 
-def test_quartus():
-    tests_dir = os.path.dirname(__file__)
-    params = '--vlogparam_bool --vlogparam_int=42 --vlogparam_str=hello'
-    params += ' --vlogdefine_bool --vlogdefine_int=42 --vlogdefine_str=hello'
+tests_dir = os.path.dirname(__file__)
+core = get_core("sockit")
+backend = get_synth('quartus', core)
+work_root = backend.work_root
 
-    Config().build_root = os.path.join(tests_dir, 'build')
-    Config().cache_root = os.path.join(tests_dir, 'cache')
-    cores_root = os.path.join(tests_dir, 'cores')
+def test_quartus_configure():
+    params = vlogparams + vlogdefines
 
-    CoreManager().add_cores_root(cores_root)
-    core = _get_core("sockit")
+    backend.configure(params)
 
-    backend =_import('build', core.main.backend)(core, export=False)
-    backend.configure(params.split())
+    ref_dir = os.path.join(tests_dir, __name__)
 
-    tcl_file = core.name.sanitized_name + '.tcl'
-    reference_tcl = os.path.join(tests_dir, __name__, tcl_file)
-    generated_tcl = os.path.join(backend.work_root, tcl_file)
+    files = ['config.mk',
+             'Makefile',
+             'sockit_1_0.tcl']
+    compare_files(ref_dir, work_root, files)
 
-    assert os.path.exists(generated_tcl)
+def test_quartus_build():
+    os.environ['PATH'] = os.path.join(tests_dir, 'mock_commands')+':'+os.environ['PATH']
+    backend.build()
 
-    with open(reference_tcl) as f1, open(generated_tcl) as f2:
-        diff = ''.join(difflib.unified_diff(f1.readlines(), f2.readlines()))
-        assert diff == ''
+def test_quartus_pgm():
+    os.environ['PATH'] = os.path.join(tests_dir, 'mock_commands')+':'+os.environ['PATH']
+    backend.run([])

@@ -6,6 +6,7 @@ import platform
 import subprocess
 import sys
 import signal
+from fusesoc import __version__
 
 #Check if this is run from a local installation
 fusesocdir = os.path.abspath(os.path.join(os.path.dirname(os.path.realpath(__file__)), ".."))
@@ -17,11 +18,10 @@ else:
 from fusesoc.config import Config
 from fusesoc.coremanager import CoreManager, DependencyError
 from fusesoc.vlnv import Vlnv
-from fusesoc.utils import pr_err, pr_info, pr_warn, Launcher
+from fusesoc.utils import Launcher, setup_logging
 
 import logging
 
-logging.basicConfig(filename='fusesoc.log', filemode='w', level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 REPOS = [('orpsoc-cores',
@@ -31,68 +31,53 @@ REPOS = [('orpsoc-cores',
           'https://github.com/fusesoc/fusesoc-cores',
           "new base library")]
 
-def _get_core(name, has_system=False):
+def _get_core(name):
     core = None
     try:
         core = CoreManager().get_core(Vlnv(name))
     except RuntimeError as e:
-        pr_err(str(e))
+        logger.error(str(e))
         exit(1)
     except DependencyError as e:
-        pr_err("'" + name + "' or any of its dependencies requires '" + e.value + "', but this core was not found")
-        exit(1)
-    if has_system and not core.backend:
-        pr_err("Unable to find .system file for '{}'".format(name))
+        logger.error("'" + name + "' or any of its dependencies requires '" + e.value + "', but this core was not found")
         exit(1)
     return core
 
-def _import(package, name):
-    module = importlib.import_module('fusesoc.{}.{}'.format(package, name))
+def _import(name):
+    module = importlib.import_module('fusesoc.edatools.{}'.format(name))
     return getattr(module, name.capitalize())
 
 def abort_handler(signal, frame):
         print('');
-        pr_info('****************************')
-        pr_info('****   FuseSoC aborted  ****')
-        pr_info('****************************')
+        logger.info('****************************')
+        logger.info('****   FuseSoC aborted  ****')
+        logger.info('****************************')
         print('');
         sys.exit(0)
 
 signal.signal(signal.SIGINT, abort_handler)
 
 def build(args):
-    core = _get_core(args.system, True)
-
-    try:
-        backend =_import('build', core.main.backend)(core, export=True)
-    except ImportError:
-        pr_err('Backend "{}" not found'.format(core.main.backend))
-        exit(1)
-    except RuntimeError as e:
-        pr_err("Failed to build '{}': {}".format(args.system, e))
-        exit(1)
-    try:
-        backend.configure(args.backendargs)
-    except RuntimeError as e:
-        pr_err(str(e))
-        exit(1)
-    print('')
-    try:
-        if not args.setup:
-            backend.build(args.backendargs)
-    except RuntimeError as e:
-        pr_err("Failed to build FPGA: " + str(e))
+    do_configure = True
+    do_build = not args.setup
+    do_run = False
+    flags = {'flow' : 'synth',
+             'tool' : None,
+             'target' : args.target}
+    run_backend('build',
+                not args.no_export,
+                do_configure, do_build, do_run,
+                flags, args.system, args.backendargs)
 
 def pgm(args):
-    core = _get_core(args.system, True)
-
-    try:
-        backend =_import('build', core.main.backend)(core, export=True)
-        backend.pgm(args.backendargs)
-    except ImportError:
-        pr_err('Backend "{}" not found'.format(core.main.backend))
-    except RuntimeError as e:
-        pr_err("Failed to program the FPGA: " + str(e))
+    do_configure = False
+    do_build = False
+    do_run = True
+    flags = {'flow' : 'synth',
+             'tool' : None}
+    run_backend('build',
+                do_configure, do_build, do_run,
+                flags, args.system, args.backendargs)
 
 def fetch(args):
     core = _get_core(args.core)
@@ -100,7 +85,7 @@ def fetch(args):
     try:
         core.setup()
     except RuntimeError as e:
-        pr_err("Failed to fetch '{}': {}".format(core.name, str(e)))
+        logger.error("Failed to fetch '{}': {}".format(core.name, str(e)))
         exit(1)
 
 def init(args):
@@ -125,16 +110,16 @@ def init(args):
         if not cores_root:
             cores_root = default_dir
         if os.path.exists(cores_root):
-            pr_warn("'{}' already exists".format(cores_root))
+            logger.warning("'{}' already exists".format(cores_root))
             #TODO: Prompt for overwrite
         else:
             _repo_paths.append(cores_root)
-            pr_info("Initializing {}".format(repo[0]))
+            logger.info("Initializing {}".format(repo[0]))
             git_args = ['clone', repo[1], cores_root]
             try:
                 Launcher('git', git_args).run()
             except RuntimeError as e:
-                pr_err("Init failed: " + str(e))
+                logger.error("Init failed: " + str(e))
                 exit(1)
 
     xdg_config_home = os.environ.get('XDG_CONFIG_HOME') or \
@@ -143,16 +128,16 @@ def init(args):
 
 
     if os.path.exists(config_file):
-        pr_warn("'{}' already exists".format(config_file))
+        logger.warning("'{}' already exists".format(config_file))
         #TODO. Prepend cores_root to file if it doesn't exist
     else:
-        pr_info("Writing configuration file to '{}'".format(config_file))
+        logger.info("Writing configuration file to '{}'".format(config_file))
         if not os.path.exists(os.path.dirname(config_file)):
             os.makedirs(os.path.dirname(config_file))
         f = open(config_file,'w')
         f.write("[main]\n")
         f.write("cores_root = {}\n".format(' '.join(_repo_paths)))
-    pr_info("FuseSoC is ready to use!")
+    logger.info("FuseSoC is ready to use!")
 
 def list_paths(args):
     cores_root = CoreManager().get_cores_root()
@@ -164,9 +149,9 @@ def list_cores(args):
     if not cores:
         cores_root = CoreManager().get_cores_root()
         if cores_root:
-            pr_err("No cores found in "+':'.join(cores_root))
+            logger.error("No cores found in "+':'.join(cores_root))
         else:
-            pr_err("cores_root is not defined")
+            logger.error("cores_root is not defined")
         exit(1)
     maxlen = max(map(len,cores.keys()))
     print('Core'.ljust(maxlen) + '   Cache status')
@@ -177,66 +162,93 @@ def list_cores(args):
 
 def core_info(args):
     core = _get_core(args.core)
-    core.info()
+    print(core.info())
 
 def list_systems(args):
     print("Available systems:")
-    for system in CoreManager().get_systems():
-        print(system)
+    for core in CoreManager().get_cores().values():
+        if core.get_tool({'flow' : 'synth', 'tool' : None}):
+            print(str(core.name))
 
-def system_info(args):
-    core = _get_core(args.system, True)
-    core.info()
-    core.system.info()
-
-def sim(args):
-    core = _get_core(args.system)
-    if args.sim:
-        sim_name = args.sim[0]
-    elif core.simulators:
-        sim_name = core.simulators[0]
+def run_backend(tool_type, export, do_configure, do_build, do_run, flags, system, backendargs):
+    if tool_type == 'simulator':
+        tool_type_short = 'sim'
+        tool_error = "No simulator was supplied on command line or found in '{}' core description"
+        build_error = "Failed to build simulation model"
+        run_error   = "Failed to run the simulation"
     else:
-        pr_err("No simulator was found in '"+ args.system + "' core description")
-        logger.error("No simulator was found in '"+ args.system + "' core description")
+        tool_type_short = 'bld'
+        tool_error = "Unable to find synthesis info for '{}'"
+        build_error = "Failed to build FPGA"
+        run_error   = "Failed to program the FPGA"
+
+    core = _get_core(system)
+    tool = core.get_tool(flags)
+    if not tool:
+        logger.error(tool_error.format(system))
+        exit(1)
+    flags['tool'] = tool
+    if export:
+        export_root = os.path.join(Config().build_root, core.name.sanitized_name, 'src')
+    else:
+        export_root = None
+    work_root   = os.path.join(Config().build_root, core.name.sanitized_name, tool_type_short+'-'+tool)
+    try:
+        eda_api = CoreManager().get_eda_api(core.name, flags, export_root)
+    except DependencyError as e:
+        logger.error(e.msg + "\nFailed to resolve dependencies for {}".format(system))
+        exit(1)
+    except SyntaxError as e:
+        logger.error(e.msg)
         exit(1)
     try:
-        CoreManager().tool = sim_name
-        sim = _import('simulator', sim_name)(core, export=True)
-    except DependencyError as e:
-        pr_err("'" + args.system + "' or any of its dependencies requires '" + e.value + "', but this core was not found")
-        exit(1)
+        backend = _import(tool)(eda_api=eda_api, work_root=work_root)
     except ImportError:
-        pr_err("Unknown simulator '{}'".format(sim_name))
+        logger.error('Backend "{}" not found'.format(tool))
         exit(1)
     except RuntimeError as e:
-        pr_err(str(e))
+        logger.error(str(e))
         exit(1)
-    if (args.testbench):
-        sim.toplevel = args.testbench[0]
-    else:
-        sim.toplevel = sim.system.simulator['toplevel']
-    if not args.keep or not os.path.exists(sim.work_root):
+    if do_configure:
         try:
-            sim.configure(args.plusargs)
+            CoreManager().setup(core.name, flags, export=export, export_root=export_root)
+            backend.configure(backendargs)
             print('')
         except RuntimeError as e:
-            pr_err("Failed to configure the system")
-            pr_err(str(e))
+            logger.error("Failed to configure the system")
+            logger.error(str(e))
             exit(1)
-        if args.setup:
-            exit(0)
+    if do_build:
         try:
-            sim.build()
+            backend.build()
         except RuntimeError as e:
-            pr_err("Failed to build simulation model")
-            pr_err(str(e))
+            logger.error(build_error + " : " + str(e))
             exit(1)
-    if not args.build_only:
+
+    if do_run:
         try:
-            sim.run(args.plusargs)
+            backend.run(backendargs)
         except RuntimeError as e:
-            pr_err("Failed to run the simulation")
-            pr_err(str(e))
+            logger.error(run_error + " : " + str(e))
+            logger.error(str(e))
+            exit(1)
+
+def sim(args):
+    do_configure = not args.keep or not os.path.exists(backend.work_root)
+    do_build = not args.setup
+    do_run   = not (args.build_only or args.setup)
+    if args.testbench:
+        logger.warn("--testbench is deprecated. Use --target instead")
+        if not args.target:
+            args.target = args.testbench
+    
+    flags = {'flow' : 'sim',
+             'tool' : args.sim,
+             'target' : args.target}
+    run_backend('simulator',
+                not args.no_export,
+                do_configure, do_build, do_run,
+                flags, args.system, args.backendargs)
 
 def update(args):
     for root in CoreManager().get_cores_root():
@@ -247,13 +259,29 @@ def update(args):
             try:
                 repo_root = subprocess.check_output(['git'] + args).decode("utf-8")
                 if repo_root.strip() in [repo[1] for repo in REPOS]:
-                    pr_info("Updating '{}'".format(root))
+                    logger.info("Updating '{}'".format(root))
                     args = ['-C', root, 'pull']
                     Launcher('git', args).run()
             except subprocess.CalledProcessError:
                 pass
 
 def run(args):
+    level = logging.DEBUG if args.verbose else logging.INFO
+
+    setup_logging(level=level, monchrome=args.monochrome)
+    logger.debug("Command line arguments: " + str(sys.argv))
+    if os.getenv("FUSESOC_CORES"):
+        logger.debug("FUSESOC_CORES: " + str(os.getenv("FUSESOC_CORES").split(':')))
+    if args.verbose:
+        logger.debug("Verbose output")
+    else:
+        logger.debug("Concise output")
+
+    if args.monochrome:
+        logger.debug("Monochrome output")
+    else:
+        logger.debug("Colorful output")
+
     cm = CoreManager()
     config = Config()
 
@@ -270,7 +298,7 @@ def run(args):
         try:
             cm.add_cores_root(cores_root)
         except (RuntimeError, IOError) as e:
-            pr_warn("Failed to register cores root '{}'".format(str(e)))
+            logger.warning("Failed to register cores root '{}'".format(str(e)))
     # Process global options
     if vars(args)['32']:
         config.archbits = 32
@@ -281,26 +309,16 @@ def run(args):
     else:
         config.archbits = 64 if platform.architecture()[0] == '64bit' else 32
         logger.debug("Autodetected " + str(config.archbits) + "-bit mode")
-    config.monochrome = vars(args)['monochrome']
-    if config.monochrome:
-        logger.debug("Monochrome output")
-    else:
-        logger.debug("Colorful output")
-    config.verbose = vars(args)['verbose']
-    if config.verbose:
-        logger.debug("Verbose output")
-    else:
-        logger.debug("Concise output")
     # Run the function
     args.func(args)
 
 def main():
-    logger.debug("Command line arguments: " + str(sys.argv))
-    if os.getenv("FUSESOC_CORES"):
-        logger.debug("FUSESOC_CORES: " + str(os.getenv("FUSESOC_CORES").split(':')))
 
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers()
+
+    # Global actions
+    parser.add_argument('--version', help='Display the FuseSoC version', action='version', version=__version__)
 
     # Global options
     parser.add_argument('--cores-root', help='Add additional directories containing cores', action='append')
@@ -309,57 +327,63 @@ def main():
     parser.add_argument('--monochrome', help='Don\'t use color for messages', action='store_true')
     parser.add_argument('--verbose', help='More info messages', action='store_true')
 
-    #General options
+    # build subparser
     parser_build = subparsers.add_parser('build', help='Build an FPGA load module')
+    parser_build.add_argument('--no-export', action='store_true', help='Reference source files from their current location instead of exporting to a build tree')
     parser_build.add_argument('--setup', action='store_true', help='Only create the project files without running the EDA tool')
+    parser_build.add_argument('--target', help='Override default target')
     parser_build.add_argument('system')
     parser_build.add_argument('backendargs', nargs=argparse.REMAINDER)
     parser_build.set_defaults(func=build)
 
+    # init subparser
     parser_init = subparsers.add_parser('init', help='Initialize the FuseSoC core libraries')
     parser_init.add_argument('-y', action='store_true', help='Skip user input and use default settings')
     parser_init.set_defaults(func=init)
 
-    parser_pgm = subparsers.add_parser('pgm', help='Program a FPGA with a system configuration')
+    # pgm subparser
+    parser_pgm = subparsers.add_parser('pgm', help='Program an FPGA with a system configuration')
     parser_pgm.add_argument('system')
     parser_pgm.add_argument('backendargs', nargs=argparse.REMAINDER)
     parser_pgm.set_defaults(func=pgm)
 
+    # fetch subparser
     parser_fetch = subparsers.add_parser('fetch', help='Fetch a remote core and its dependencies to local cache')
     parser_fetch.add_argument('core')
     parser_fetch.set_defaults(func=fetch)
 
+    # list-systems subparser
     parser_list_systems = subparsers.add_parser('list-systems', help='List available systems')
     parser_list_systems.set_defaults(func=list_systems)
 
-    parser_system_info = subparsers.add_parser('system-info', help='Displays details about a system')
-    parser_system_info.add_argument('system')
-    parser_system_info.set_defaults(func=system_info)
-
+    # list-cores subparser
     parser_list_cores = subparsers.add_parser('list-cores', help='List available cores')
-    #parser_list_cores.
     parser_list_cores.set_defaults(func=list_cores)
 
-    parser_core_info = subparsers.add_parser('core-info', help='Displays details about a core')
+    # core-info subparser
+    parser_core_info = subparsers.add_parser('core-info', help='Display details about a core')
     parser_core_info.add_argument('core')
     parser_core_info.set_defaults(func=core_info)
 
-    parser_list_paths = subparsers.add_parser('list-paths', help='Displays the search order for core root paths')
+    # list-paths subparser
+    parser_list_paths = subparsers.add_parser('list-paths', help='Display the search order for core root paths')
     parser_list_paths.set_defaults(func=list_paths)
 
-    #Simulation subparser
+    # sim subparser
     parser_sim = subparsers.add_parser('sim', help='Setup and run a simulation')
-    parser_sim.add_argument('--sim', nargs=1, help='Override the simulator settings from the system file')
+    parser_sim.add_argument('--no-export', action='store_true', help='Reference source files from their current location instead of exporting to a build tree')
+    parser_sim.add_argument('--sim', help='Override the simulator settings from the system file')
     parser_sim.add_argument('--setup', action='store_true', help='Only create the project files without running the EDA tool')
     parser_sim.add_argument('--build-only', action='store_true', help='Build the simulation binary without running the simulator')
     parser_sim.add_argument('--force', action='store_true', help='Force rebuilding simulation model when directory exists')
     parser_sim.add_argument('--keep', action='store_true', help='Prevent rebuilding simulation model if it exists')
-    parser_sim.add_argument('--dry-run', action='store_true')
-    parser_sim.add_argument('--testbench', nargs=1, help='Override default testbench')
-    parser_sim.add_argument('system',help='Select a system to simulate') #, choices = Config().get_systems())
-    parser_sim.add_argument('plusargs', nargs=argparse.REMAINDER)
+    parser_sim.add_argument('--target', help='Override default target')
+    parser_sim.add_argument('--testbench', help='Override default testbench')
+    parser_sim.add_argument('system', help='Select a system to simulate') #, choices = Config().get_systems())
+    parser_sim.add_argument('backendargs', nargs=argparse.REMAINDER)
     parser_sim.set_defaults(func=sim)
 
+    # update subparser
     parser_update = subparsers.add_parser('update', help='Update the FuseSoC core libraries')
     parser_update.set_defaults(func=update)
 

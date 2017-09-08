@@ -3,6 +3,7 @@ CAPI=1
 description = "Minimal mor1kx simulation environment"
 depend =
  adv_debug_sys
+ filetypes
  jtag_tap-1.13
  mor1kx
  paramtest
@@ -43,9 +44,15 @@ depend = verilator_tb_utils
 verilator_options = -Wno-fatal --trace
 tb_toplevel   = bench/verilator/tb.cpp
 top_module    = orpsoc_top
+cli_parser    = fusesoc
 
 [parameter clear_ram]
 datatype    = bool
 description = Preset RAM to a known value (0)
 paramtype   = plusarg
 scope       = private
+
+[scripts]
+pre_build_scripts = scripts/pre_build_script
+pre_run_scripts = scripts/pre_run_script
+post_run_scripts = scripts/post_run_script

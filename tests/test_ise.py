@@ -5,21 +5,17 @@ import pytest
 from fusesoc.config import Config
 from fusesoc.core import Core
 from fusesoc.coremanager import CoreManager
-from fusesoc.main import _get_core, _import
+
+from test_common import get_core, get_synth
 
 def test_ise():
     tests_dir = os.path.dirname(__file__)
     params = '--vlogparam_bool --vlogparam_int=42 --vlogparam_str=hello'
     params += ' --vlogdefine_bool --vlogdefine_int=42 --vlogdefine_str=hello'
 
-    Config().build_root = os.path.join(tests_dir, 'build')
-    Config().cache_root = os.path.join(tests_dir, 'cache')
-    cores_root = os.path.join(tests_dir, 'cores')
+    core = get_core("atlys")
 
-    CoreManager().add_cores_root(cores_root)
-    core = _get_core("atlys")
-
-    backend =_import('build', core.main.backend)(core, export=False)
+    backend = get_synth('ise', core)
     backend.configure(params.split())
 
     tcl_file = core.name.sanitized_name + '.tcl'

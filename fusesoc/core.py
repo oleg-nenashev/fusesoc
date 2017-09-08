@@ -21,6 +21,25 @@ class FileSet(object):
         self.usage   = usage
         self.private = private
 
+    def __str__(self):
+        s = """Name  : {}
+ Scope : {}
+ Usage : {}
+ Files :\n""".format(self.name,
+                     "private" if self.private else "public",
+                     '/'.join(self.usage))
+        if not self.file:
+            s += " <No files>\n"
+        else:
+            _longest_name = max([len(x.name) for x in self.file])
+            _longest_type = max([len(x.file_type) for x in self.file])
+            for f in self.file:
+                _s = "  {} {} {}\n"
+                s += _s.format(f.name.ljust(_longest_name),
+                               f.file_type.ljust(_longest_type),
+                               "(include file)" if f.is_include_file else "")
+        return s
+
 class Core:
     def __init__(self, core_file):
         basename = os.path.basename(core_file)
@@ -63,6 +82,8 @@ class Core:
             else:
                 setattr(self, s.TAG, s)
 
+        if not self.main:
+            self.main = section.MainSection()
         if self.main.name:
             self.name = Vlnv(self.main.name)
         else:
@@ -80,21 +101,23 @@ class Core:
 
         cache_root = os.path.join(Config().cache_root, self.sanitized_name)
         if config.has_section('plusargs'):
-            utils.pr_warn("plusargs section is deprecated and will not be parsed by FuseSoC. Please migrate to parameters in " + str(self.name))
+            logger.warning("plusargs section is deprecated and will not be parsed by FuseSoC. Please migrate to parameters in " + str(self.name))
             self.plusargs = Plusargs(dict(config.items('plusargs')))
         if config.has_section('provider'):
             items    = dict(config.items('provider'))
-
+            patch_root = os.path.join(self.core_root, 'patches')
+            patches = self.main.patches
+            if os.path.exists(patch_root):
+                for p in sorted(os.listdir(patch_root)):
+                    patches.append(os.path.join('patches', p))
+            items['patches'] = patches
             provider_name = items.get('name')
             if provider_name is None:
                 raise RuntimeError('Missing "name" in section [provider]')
-            try:
-                provider_module = importlib.import_module(
-                        'fusesoc.provider.%s' % provider_name)
-                self.provider = provider_module.PROVIDER_CLASS(
-                    items, self.core_root, cache_root)
-            except ImportError:
-                raise
+            provider_module = importlib.import_module(
+                'fusesoc.provider.%s' % provider_name)
+            self.provider = provider_module.PROVIDER_CLASS(
+                items, self.core_root, cache_root)
         if self.provider:
             self.files_root = self.provider.files_root
 
@@ -105,7 +128,7 @@ class Core:
             self.setup()
 
         for f in self.main.component:
-            self._parse_component(os.path.join(self.files_root, f))
+            self._parse_component(f)
 
     def cache_status(self):
         if self.provider:
@@ -113,26 +136,139 @@ class Core:
         else:
             return 'local'
 
+    def get_depends(self, flags={}):
+        self._debug("Getting dependencies for flags {}".format(str(flags)))
+        _depends = self.depend
+        try:
+            _depends += getattr(self, flags['tool']).depend
+        except (AttributeError, KeyError):
+            pass
+        return _depends
+
+    def get_files(self, flags={}):
+        files = []
+        if flags['tool'] in ['ghdl', 'icarus', 'isim', 'modelsim', 'rivierapro', 'xsim']:
+            flow = 'sim'
+        elif flags['tool'] in ['icestorm', 'ise', 'quartus', 'verilator', 'vivado']:
+            flow = 'synth'
+
+        usage = set([flow, flags['tool']])
+
+        for fs in self.file_sets:
+            if (not fs.private or flags['is_toplevel']) and (usage & set(fs.usage)):
+                files += fs.file
+        return files
+
+    def get_parameters(self, flags={}):
+        self._debug("Getting parameters for flags '{}'".format(str(flags)))
+        parameters = []
+        for k, v in self.parameter.items():
+            if (v.scope == 'public') or flags['is_toplevel']:
+                v.name = k
+                parameters.append(v)
+        self._debug("Found parameters {}".format(parameters))
+        return parameters
+
+    def get_scripts(self, flags):
+        scripts = {}
+        if self.scripts:
+            env = {'BUILD_ROOT' : Config().build_root}
+            if flags['flow'] is 'sim':
+                for s in ['pre_build_scripts', 'pre_run_scripts', 'post_run_scripts']:
+                    v = getattr(self.scripts, s)
+                    if v:
+                        scripts[s] = [{x : {'env' : env}} for x in v]
+            #For backwards compatibility we only use the script from the
+            #top-level core in synth flows. We also rename them here to match
+            #the backend stages and set the SYSTEM_ROOT env var
+            elif flags['flow'] is 'synth' and flags['is_toplevel']:
+                env['SYSTEM_ROOT'] = self.files_root
+                v = self.scripts.pre_synth_scripts
+                if v:
+                    scripts['pre_build_scripts'] = [{x : {'env' : env}} for x in v]
+                v = self.scripts.post_impl_scripts
+                if v:
+                    scripts['post_build_scripts'] = [{x : {'env' : env}} for x in v]
+        return scripts
+
+    def get_toplevel(self, flags={}):
+        self._debug("Getting toplevel for flags {}".format(str(flags)))
+        if flags['tool'] == 'verilator':
+            toplevel = self.verilator.top_module
+        elif flags['flow'] == 'synth':
+            toplevel = self.backend.top_module
+        elif 'target' in flags and flags['target']:
+            toplevel = flags['target']
+        else:
+            toplevel = self.simulator['toplevel']
+        self._debug("Matched toplevel {}".format(toplevel))
+        return toplevel
+
+    def get_tool(self, flags):
+        self._debug("Getting tool for flags {}".format(str(flags)))
+        tool = None
+        if flags['tool']:
+            tool =  flags['tool']
+        elif flags['flow'] == 'sim':
+            if len(self.simulators) > 0:
+                tool = self.simulators[0]
+        elif flags['flow'] == 'synth':
+            if hasattr(self.main, 'backend'):
+                tool = self.main.backend
+        self._debug(" Matched tool {}".format(tool))
+        return tool
+
+    def get_tool_options(self, flags):
+        self._debug("Getting tool options for flags {}".format(str(flags)))
+        options = {}
+        section = getattr(self, flags['tool'])
+
+        if section:
+
+            #Special case to pick up verilator libs from all dependencies
+            if flags['tool'] == 'verilator':
+                options['libs'] = section.libs
+            #Otherwise, only care about options from toplevel core
+            if flags['is_toplevel']:
+                for member in section._members:
+                    if hasattr(section, member) and getattr(section, member) and not member == 'depend':
+                        #Strip quoted strings
+                        _member = getattr(section, member)
+                        if (type(_member) == str) and _member.startswith('"') and _member.endswith('"'):
+                            _member = _member[1:-1]
+                        options[member] = _member
+        self._debug("Found tool options {}".format(str(options)))
+        return options
+
+    def get_vpi(self, flags):
+        self._debug("Getting VPI libraries for flags {}".format(flags))
+        vpi = []
+        if self.vpi:
+            vpi.append({'name'         : self.sanitized_name,
+                        'src_files'    : self.vpi.src_files,
+                        'include_dirs' : self.vpi.include_dirs,
+                        'libs'         : [l[2:] for l in self.vpi.libs],
+            })
+        self._debug(" Matched VPI libraries {}".format([v['name'] for v in vpi]))
+        return vpi
+
     def setup(self):
         if self.provider:
-            if self.provider.fetch():
-                self.patch(self.files_root)
+            self.provider.fetch()
 
-    def export(self, dst_dir):
+    def export(self, dst_dir, flags={}):
         if os.path.exists(dst_dir):
             shutil.rmtree(dst_dir)
 
-        #FIXME: Separate tb_files to an own directory tree (src/tb/core_name ?)
-        src_files = self.export_files
 
-        for s in section.SECTION_MAP:
-            obj = getattr(self, s)
-            if obj:
-                if not (type(obj) == OrderedDict):
-                    src_files += [f.name for f in obj.export()]
-                else:
-                    for item in obj.values():
-                        src_files += [f.name for f in item.export()]
+        src_files = [f.name for f in self.get_files(flags)]
+        if self.vpi and flags['tool'] in ['icarus', 'modelsim', 'rivierapro']:
+            src_files += [f.name for f in self.vpi.src_files + self.vpi.include_files]
+        for section in self.get_scripts(flags).values():
+            for script in section:
+                src_files += script.keys()
+
+        self._debug("Exporting {}".format(str(src_files)))
 
         dirs = list(set(map(os.path.dirname,src_files)))
         for d in dirs:
@@ -142,36 +278,14 @@ class Core:
         for f in src_files:
             if not os.path.isabs(f):
                 if(os.path.exists(os.path.join(self.core_root, f))):
-                    shutil.copyfile(os.path.join(self.core_root, f),
+                    shutil.copy2(os.path.join(self.core_root, f),
                                     os.path.join(dst_dir, f))
                 elif (os.path.exists(os.path.join(self.files_root, f))):
-                    shutil.copyfile(os.path.join(self.files_root, f),
+                    shutil.copy2(os.path.join(self.files_root, f),
                                     os.path.join(dst_dir, f))
                 else:
                     raise RuntimeError('Cannot find %s in :\n\t%s\n\t%s'
                                   % (f, self.files_root, self.core_root))
-
-    def patch(self, dst_dir):
-        #FIXME: Use native python patch instead
-        patch_root = os.path.join(self.core_root, 'patches')
-        patches = self.main.patches
-        if os.path.exists(patch_root):
-            for p in sorted(os.listdir(patch_root)):
-                patches.append(os.path.join('patches', p))
-
-        for f in patches:
-            patch_file = os.path.abspath(os.path.join(self.core_root, f))
-            if os.path.isfile(patch_file):
-                logger.debug("  applying patch file: " + patch_file + "\n" +
-                             "                   to: " + os.path.join(dst_dir))
-                try:
-                    utils.Launcher('git', ['apply', '--unsafe-paths',
-                                     '--directory', os.path.join(dst_dir),
-                                     patch_file]).run()
-                except OSError:
-                    print("Error: Failed to call external command 'patch'")
-                    return False
-        return True
 
     def _merge_system_file(self, system_file, config):
         def _replace(sec, src=None, dst=None):
@@ -270,7 +384,7 @@ class Core:
                 _file_type = 'cppSource'
             elif self.verilator.source_type == 'systemC':
                 _file_type = 'systemCSource'
-            elif self.verilator.source_type in ['', 'C']:
+            elif self.verilator.source_type == 'C':
                 _file_type = 'cSource'
             else:
                 raise RuntimeError("Invalid verilator file type '{}'".format(self.verilator.source_type))
@@ -288,9 +402,13 @@ class Core:
                                           private = True))
             self.export_files += [f.name for f in _files]
 
+    def _debug(self, msg):
+        logger.debug("{} : {}".format(str(self.name), msg))
+
     def _parse_component(self, component_file):
+        component_dir = os.path.dirname(component_file)
         component = Component()
-        component.load(component_file)
+        component.load(os.path.join(self.files_root, component_file))
 
         if not self.main.description:
             self.main.description = component.description
@@ -299,6 +417,7 @@ class Core:
         for file_set in component.fileSets.fileSet:
             _name = file_set.name
             for f in file_set.file:
+                f.name = os.path.normpath(os.path.join(component_dir, f.name))
                 self.export_files.append(f.name)
                 #FIXME: Harmonize underscore vs camelcase
                 f.file_type = f.fileType
@@ -318,48 +437,31 @@ class Core:
                                           usage = ['sim', 'synth']))
         self.file_sets += _file_sets
     def info(self):
+        HEADER = """CORE INFO
+Name                 : {}
+Core root            : {}
+Supported simulators : {}
+Common dependencies  : {}\n\n"""
 
-        show_list = lambda l: "\n                        ".join([str(x) for x in l])
-        show_dict = lambda d: show_list(["%s: %s" % (k, d[k]) for k in d.keys()])
-
-        print("CORE INFO")
-        print("Name:                   " + str(self.name))
-        print("Core root:              " + self.core_root)
-        if self.simulators:
-            print("Supported simulators:   " + show_list(self.simulators))
-        if self.plusargs: 
-            print("\nPlusargs:               " + show_dict(self.plusargs.items))
-        if self.depend:
-            print("\nCommon dependencies : " + ' '.join([x.depstr() for x in self.depend]))
-
-        for s in section.SECTION_MAP:
-            if s in ['main', 'verilog']:
+        s = HEADER.format(str(self.name),
+                          self.core_root,
+                          ' '.join(self.simulators),
+                          ' '.join([x.depstr() for x in self.depend]))
+        for sec in section.SECTION_MAP:
+            if sec in ['main', 'verilog', 'fileset']:
                 continue
-            obj = getattr(self, s)
+            obj = getattr(self, sec)
             if obj:
                 if(type(obj) == OrderedDict):
                     for k, v in obj.items():
-                        print("== " + s + " " + k + " ==")
-                        print(v)
+                        s += "== {} {} ==\n{}\n".format(sec,k, v)
                 else:
-                    print("== " + s + " ==")
-                    print(obj)
-        print("File sets:")
-        for s in self.file_sets:
-            print("""
- Name  : {}
- Scope : {}
- Usage : {}
- Files :""".format(s.name, "private" if s.private else "public", '/'.join(s.usage)))
-            if not s.file:
-                print(" <No files>")
-            else:
-                _longest_name = max([len(x.name) for x in s.file])
-                _longest_type = max([len(x.file_type) for x in s.file])
-                for f in s.file:
-                    print("  {} {} {}".format(f.name.ljust(_longest_name),
-                                              f.file_type.ljust(_longest_type),
-                                              "(include file)" if f.is_include_file else ""))
+                    s += "== {} ==\n{}\n".format(sec, obj)
+        s += "File sets:\n"
+        for fs in self.file_sets:
+            s += str(fs) + '\n'
+
         if self.main.backend:
-            print("\n== Backend " + self.main.backend + " ==")
-            print(self.backend)
+            s += "\n== Backend {} ==\n{}\n".format(self.main.backend,
+                                                   self.backend)
+        return s

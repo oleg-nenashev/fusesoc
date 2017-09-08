@@ -15,7 +15,7 @@ class FusesocConfigParser(configparser.SafeConfigParser):
             raise Exception("Could not find " + config_file)
         f = open(config_file)
         id_string = f.readline().split('=')
-        
+
         if id_string[0].strip().upper() in ['CAPI', 'SAPI']:
             self.type = id_string[0]
         else:
@@ -23,7 +23,8 @@ class FusesocConfigParser(configparser.SafeConfigParser):
         try:
             self.version = int(id_string[1].strip())
         except ValueError:
-                print("Unknown version: \"" + id_string[1].strip()+'" in ' + config_file)
+                raise SyntaxError("Unknown version '{}' in {}".format(id_string[1].strip(),
+                                                                      config_file))
         except IndexError:
             raise SyntaxError("Could not find API version in " + config_file)
         try:
@@ -33,6 +34,8 @@ class FusesocConfigParser(configparser.SafeConfigParser):
         except configparser.ParsingError as e:
             raise SyntaxError(e.message)
         except configparser.DuplicateSectionError as e:
+            raise SyntaxError(e.message)
+        except configparser.DuplicateOptionError as e:
             raise SyntaxError(e.message)
 
     def get_section(self, section):

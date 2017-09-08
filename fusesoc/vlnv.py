@@ -1,3 +1,6 @@
+from functools import total_ordering
+
+@total_ordering
 class Vlnv(object):
     def __init__(self, s, default_relation = ">="):
         def _is_rev(s):
@@ -59,9 +62,14 @@ class Vlnv(object):
             self.vendor  = vlnv_parts[0]
             self.library = vlnv_parts[1]
             self.name    = vlnv_parts[2]
-            self.version = vlnv_parts[3]
+            sl = vlnv_parts[3].split('-')
+            if len(sl) > 1 and _is_rev(sl[-1]):
+                self.revision = int(sl.pop()[1:])
+                self.version = '-'.join(sl)
+            else:
+                self.version = vlnv_parts[3]
         else:
-            raise SyntaxError("Illegal core name '{}'".format(s)) 
+            raise SyntaxError("Illegal core name '{}'".format(s))
 
         if self.version or (self.revision > 0):
             if not self.relation:
@@ -103,3 +111,11 @@ class Vlnv(object):
         else:
             relation = self.relation
         return relation+str(self)
+
+    def __eq__(self, other):
+        return ((self.vendor , self.library , self.name , self.version) ==
+                (other.vendor, other.library, other.name, other.version))
+
+    def __lt__(self, other):
+        return ((self.vendor , self.library , self.name , self.version) <
+                (other.vendor, other.library, other.name, other.version))

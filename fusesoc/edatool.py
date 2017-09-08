@@ -1,22 +1,12 @@
 import argparse
 from collections import OrderedDict
-import copy
 import os
 import shutil
-import sys
+import subprocess
+import logging
 
-if sys.version_info[0] >= 3:
-    import urllib.request as urllib
-    from urllib.error import URLError
-    from urllib.error import HTTPError
-else:
-    import urllib
-    from urllib2 import URLError
-    from urllib2 import HTTPError
-
-from fusesoc.config import Config
-from fusesoc.coremanager import CoreManager
-from fusesoc.utils import pr_info
+from fusesoc.utils import Launcher
+logger = logging.getLogger(__name__)
 
 class FileAction(argparse.Action):
     def __call__(self, parser, namespace, values, option_string=None):
@@ -27,23 +17,15 @@ class FileAction(argparse.Action):
 
 class EdaTool(object):
 
-    def __init__(self, system, export):
-        self.system = system
-        self.export = export
-        self.TOOL_NAME = self.__class__.__name__.lower()
-        build_root = os.path.join(Config().build_root, self.system.sanitized_name)
+    def __init__(self, eda_api, work_root):
+        self.name = eda_api['name']
+        _tool_name = self.__class__.__name__.lower()
+        self.tool_options = eda_api['tool_options'][_tool_name]
+        self.fusesoc_options = eda_api['tool_options']['fusesoc']
 
-        self.src_root  = os.path.join(build_root, 'src')
-        self.work_root = os.path.join(build_root, self.TOOL_TYPE+'-'+self.TOOL_NAME)
-        self.cm = CoreManager()
-        self.cores = self.cm.get_depends(self.system.name)
-
+        self.work_root = work_root
         self.env = os.environ.copy()
 
-        #FIXME: Remove BUILD_ROOT once cores have had some time
-        # to migrate to SRC_ROOT/WORK_ROOT
-        self.env['BUILD_ROOT'] = os.path.abspath(build_root)
-        self.env['SRC_ROOT']  = os.path.abspath(self.src_root)
         self.env['WORK_ROOT'] = os.path.abspath(self.work_root)
 
         self.plusarg     = OrderedDict()
@@ -52,6 +34,11 @@ class EdaTool(object):
         self.generic     = OrderedDict()
         self.cmdlinearg  = OrderedDict()
         self.parsed_args = False
+
+        self.files      = eda_api['files']
+        self.parameters = eda_api['parameters']
+        self.toplevel = eda_api['toplevel']
+        self.vpi_modules = eda_api['vpi']
 
     def configure(self, args):
         if os.path.exists(self.work_root):
@@ -63,18 +50,21 @@ class EdaTool(object):
         else:
             os.makedirs(self.work_root)
 
-        for core in self.cores:
-            pr_info("Preparing " + str(core.name))
-            dst_dir = os.path.join(self.src_root, core.sanitized_name)
-            try:
-                core.setup()
-            except URLError as e:
-                raise RuntimeError("Problem while fetching '" + core.name + "': " + str(e.reason))
-            except HTTPError as e:
-                raise RuntimeError("Problem while fetching '" + core.name + "': " + str(e.reason))
+    def build(self):
+        self.build_pre()
+        self.build_main()
+        self.build_post()
 
-            if self.export:
-                core.export(dst_dir)
+    def build_pre(self):
+        if 'pre_build_scripts' in self.fusesoc_options:
+            self._run_scripts(self.fusesoc_options['pre_build_scripts'])
+
+    def build_main(self):
+        Launcher('make', cwd=self.work_root).run()
+
+    def build_post(self):
+        if 'post_build_scripts' in self.fusesoc_options:
+            self._run_scripts(self.fusesoc_options['post_build_scripts'])
 
     def parse_args(self, args, prog, paramtypes):
         if self.parsed_args:
@@ -85,7 +75,7 @@ class EdaTool(object):
                     'str'  : {'type' : str , 'nargs' : 1},
                     }
         progname = 'fusesoc {} {}'.format(prog,
-                                          self.system.name)
+                                          self.name)
         parser = argparse.ArgumentParser(prog = progname,
                                          conflict_handler='resolve')
         param_groups = {}
@@ -94,68 +84,107 @@ class EdaTool(object):
                   'vlogdefine' : 'Verilog defines (Compile-time global symbol)',
                   'generic'    : 'VHDL generic (Run-time option)',
                   'cmdlinearg' : 'Command-line arguments (Run-time option)'}
-        all_params = {}
-        for core in self.cores:
+        param_type_map = {}
 
-            for param_name, param in core.parameter.items():
-                if param.paramtype in paramtypes and \
-                   (core.name == self.system.name or \
-                   param.scope == 'public'):
-                    if not param.paramtype in param_groups:
-                        param_groups[param.paramtype] = \
-                        parser.add_argument_group(_descr[param.paramtype])
+        for param in self.parameters:
+            _paramtype = param['paramtype']
+            if _paramtype in paramtypes:
+                if not _paramtype in param_groups:
+                    param_groups[_paramtype] = \
+                    parser.add_argument_group(_descr[_paramtype])
 
-                    default = None
-                    if not param.default == '':
-                        try:
-                            default = [typedict[param.datatype]['type'](param.default)]
-                        except KeyError as e:
-                            pass
+                default = None
+                if param['default']:
                     try:
-                        param_groups[param.paramtype].add_argument('--'+param_name,
-                                                                   help=param.description,
-                                                                   default=default,
-                                                                   **typedict[param.datatype])
+                        default = [typedict[param['datatype']]['type'](param['default'])]
                     except KeyError as e:
-                        raise RuntimeError("Invalid data type {} for parameter '{}' in '{}'".format(str(e),
-                                                                                                   param_name,
-                                                                                                   core.name))
-                    all_params[param_name.replace('-','_')] = param.paramtype
-        p = parser.parse_args(args)
+                        pass
+                try:
+                    param_groups[_paramtype].add_argument('--'+param['name'],
+                                                               help=param['description'],
+                                                               default=default,
+                                                               **typedict[param['datatype']])
+                except KeyError as e:
+                    raise RuntimeError("Invalid data type {} for parameter '{}'".format(str(e),
+                                                                                        param['name']))
+                param_type_map[param['name'].replace('-','_')] = _paramtype
+        #Parse arguments
+        for key,value in sorted(vars(parser.parse_args(args)).items()):
 
-        for key,value in sorted(vars(p).items()):
-            paramtype = all_params[key]
-            if value == True:
-                getattr(self, paramtype)[key] = "true"
-            elif value == False or value is None:
-                pass
+            paramtype = param_type_map[key]
+            if value is None:
+                continue
+
+            if type(value) == bool:
+                _value = value
             else:
-                if type(value[0]) == str and paramtype == 'vlogparam':
-                    _value = '"'+str(value[0])+'"'
-                else:
-                    _value = str(value[0])
-                getattr(self, paramtype)[key] = _value
+                _value = value[0]
+
+            getattr(self, paramtype)[key] = _value
         self.parsed_args = True
 
-    def _get_fileset_files(self, usage):
+    def _get_fileset_files(self, force_slash=False):
+        class File:
+            def __init__(self, name, file_type, logical_name):
+                self.name         = name
+                self.file_type    = file_type
+                self.logical_name = logical_name
         incdirs = []
         src_files = []
-        for core in self.cores:
-            if self.export:
-                files_root = os.path.join(self.src_root, core.sanitized_name)
+        for f in self.files:
+            if f['is_include_file']:
+                _incdir = os.path.relpath(os.path.dirname(f['name']),self.work_root)
+                if force_slash:
+                    _incdir = _incdir.replace('\\', '/')
+                if not _incdir in incdirs:
+                    incdirs.append(_incdir)
             else:
-                files_root = core.files_root
-            basepath = os.path.relpath(files_root, self.work_root)
-            for fs in core.file_sets:
-                if (set(fs.usage) & set(usage)) and ((core.name == self.system.name) or not fs.private):
-                    for file in fs.file:
-                        if file.is_include_file:
-                            _incdir = os.path.join(basepath, os.path.dirname(file.name))
-                            if not _incdir in incdirs:
-                                incdirs.append(_incdir)
-                        else:
-                            new_file = copy.deepcopy(file)
-                            new_file.name = os.path.join(basepath, file.name)
-                            src_files.append(new_file)
+                _name = os.path.relpath(f['name'], self.work_root)
+                if force_slash:
+                    _name = _name.replace('\\', '/')
+                src_files.append(File(_name,
+                                      f['file_type'],
+                                      f['logical_name']))
         return (src_files, incdirs)
 
+    """ Convert a parameter value to string suitable to be passed to an EDA tool
+
+    Rules:
+    - Booleans are represented as 0/1
+    - Strings are either passed through (strings_in_quotes=False) or
+      put into double quotation marks (")
+    - Everything else (including int, float, etc.) are converted using the str()
+      function.
+    """
+    def _param_value_str(self, param_value, strings_in_quotes=False):
+
+      if type(param_value) == bool:
+          if (param_value) == True:
+              return '1'
+          else:
+              return '0'
+      elif type(param_value) == str:
+          if strings_in_quotes:
+              return '"'+str(param_value)+'"'
+          else:
+              return str(param_value)
+      else:
+          return str(param_value)
+
+    def _run_scripts(self, scripts):
+        for script in scripts:
+            for cmd, options in script.items():
+                if not (os.path.isfile(cmd) and os.access(cmd, os.X_OK)):
+                    raise RuntimeError("'{}' is not an executable file".format(cmd))
+                _env = self.env.copy()
+                if 'env' in options:
+                    _env.update(options['env'])
+                logger.info("Running " + cmd);
+                try:
+                    subprocess.check_call([cmd],
+                                          cwd = self.work_root,
+                                          env = _env,
+                                          shell=True)
+                except subprocess.CalledProcessError as e:
+                    msg = "'{}' exited with error code {}"
+                    raise RuntimeError(msg.format(cmd, e.returncode))
