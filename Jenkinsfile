@@ -1,7 +1,14 @@
 import org.librecores.ci.LCCI
+import org.librecores.ci.Modules
 
-node('docker-fusesoc-icarus') {
+def lcci_modules = new Modules(steps)
+
+node('librecores-ci-modules') {
   try {
+    stage("Init tools") {
+      lcci_modules.load("eda/iverilog/v10_1")
+    }
+    
     stage("Build FuseSoC") {
       sh "whoami"
       new LCCI(this).checkoutScmOrFallback("https://github.com/oleg-nenashev/fusesoc.git")
@@ -11,7 +18,7 @@ node('docker-fusesoc-icarus') {
     
     // Run the existing Test suite
     stage("Test") {
-      sh "fusesoc sim wb_sdram_ctrl"
+      lcci_modules.sh "fusesoc sim wb_sdram_ctrl --iterations 10"
     }
   } finally {
     stage("Process reports") {
