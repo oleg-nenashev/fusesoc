@@ -18,7 +18,7 @@ node('librecores-ci-modules') {
     
     // Run the existing Test suite
     stage("Test") {
-      lcci_modules.sh "fusesoc sim wb_sdram_ctrl --iterations 10"
+      lcci_modules.sh "fusesoc sim wb_sdram_ctrl --transactions 10"
     }
   } finally {
     stage("Process reports") {
