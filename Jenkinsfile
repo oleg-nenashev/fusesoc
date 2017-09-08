@@ -1,4 +1,3 @@
-import org.librecores.fusesoc.Builder
 import org.librecores.ci.LCCI
 
 node('docker-fusesoc-icarus') {
