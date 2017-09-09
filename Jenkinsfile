@@ -11,7 +11,7 @@ node('docker-fusesoc-icarus') {
     
     // Run the existing Test suite
     stage("Test") {
-      sh "fusesoc sim wb_sdram_ctrl"
+      sh "fusesoc sim wb_sdram_ctrl --transactions 10"
     }
   } finally {
     stage("Process reports") {
